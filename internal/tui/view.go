@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -294,7 +295,7 @@ func (m Model) viewObservationDetail() string {
 
 	b.WriteString(fmt.Sprintf("%s %s\n",
 		detailLabelStyle.Render("Created:"),
-		timestampStyle.Render(obs.CreatedAt)))
+		timestampStyle.Render(localTime(obs.CreatedAt))))
 
 	if obs.ToolName != nil {
 		b.WriteString(fmt.Sprintf("%s %s\n",
@@ -461,7 +462,7 @@ func (m Model) viewSessions() string {
 		line := fmt.Sprintf("%s%s  %s  %s obs  %s",
 			cursor,
 			projectStyle.Render(fmt.Sprintf("%-20s", s.Project)),
-			timestampStyle.Render(s.StartedAt),
+			timestampStyle.Render(localTime(s.StartedAt)),
 			statNumberStyle.Render(fmt.Sprintf("%d", s.ObservationCount)),
 			style.Render(summary))
 
@@ -492,7 +493,7 @@ func (m Model) viewSessionDetail() string {
 	}
 
 	sess := m.Sessions[m.SelectedSessionIdx]
-	header := fmt.Sprintf("  Session: %s — %s", sess.Project, sess.StartedAt)
+	header := fmt.Sprintf("  Session: %s — %s", sess.Project, localTime(sess.StartedAt))
 	b.WriteString(headerStyle.Render(header))
 	b.WriteString("\n")
 
@@ -679,7 +680,7 @@ func (m Model) renderObservationListItem(index int, id int64, obsType, title, co
 		typeBadgeStyle.Render(fmt.Sprintf("[%-12s]", obsType)),
 		style.Render(truncateStr(title, 50)),
 		proj,
-		timestampStyle.Render(createdAt))
+		timestampStyle.Render(localTime(createdAt)))
 
 	// Content preview on second line
 	preview := truncateStr(content, 80)
@@ -691,6 +692,20 @@ func (m Model) renderObservationListItem(index int, id int64, obsType, title, co
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+// localTime converts a UTC timestamp string from SQLite to local time for display.
+func localTime(utc string) string {
+	for _, layout := range []string{
+		"2006-01-02 15:04:05",
+		time.RFC3339,
+		time.RFC3339Nano,
+	} {
+		if t, err := time.Parse(layout, utc); err == nil {
+			return t.UTC().Local().Format("2006-01-02 15:04:05")
+		}
+	}
+	return utc // unparseable — return as-is
+}
 
 func truncateStr(s string, max int) string {
 	// Remove newlines for single-line display

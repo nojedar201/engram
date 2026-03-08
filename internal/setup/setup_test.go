@@ -25,8 +25,7 @@ func resetSetupSeams(t *testing.T) {
 	oldInjectOpenCodeMCPFn := injectOpenCodeMCPFn
 	oldInjectGeminiMCPFn := injectGeminiMCPFn
 	oldWriteGeminiSystemPromptFn := writeGeminiSystemPromptFn
-	oldEnsureGeminiEnvOverrideFn := ensureGeminiEnvOverrideFn
-	oldWriteCodexMemoryInstructionFilesFn := writeCodexMemoryInstructionFilesFn
+oldWriteCodexMemoryInstructionFilesFn := writeCodexMemoryInstructionFilesFn
 	oldInjectCodexMCPFn := injectCodexMCPFn
 	oldInjectCodexMemoryConfigFn := injectCodexMemoryConfigFn
 	oldAddClaudeCodeAllowlistFn := addClaudeCodeAllowlistFn
@@ -46,8 +45,7 @@ func resetSetupSeams(t *testing.T) {
 		injectOpenCodeMCPFn = oldInjectOpenCodeMCPFn
 		injectGeminiMCPFn = oldInjectGeminiMCPFn
 		writeGeminiSystemPromptFn = oldWriteGeminiSystemPromptFn
-		ensureGeminiEnvOverrideFn = oldEnsureGeminiEnvOverrideFn
-		writeCodexMemoryInstructionFilesFn = oldWriteCodexMemoryInstructionFilesFn
+writeCodexMemoryInstructionFilesFn = oldWriteCodexMemoryInstructionFilesFn
 		injectCodexMCPFn = oldInjectCodexMCPFn
 		injectCodexMemoryConfigFn = oldInjectCodexMemoryConfigFn
 		addClaudeCodeAllowlistFn = oldAddClaudeCodeAllowlistFn
@@ -106,8 +104,8 @@ func TestInstallGeminiCLIInjectsMCPConfig(t *testing.T) {
 		t.Fatalf("unexpected agent in result: %q", result.Agent)
 	}
 
-	if result.Files != 3 {
-		t.Fatalf("expected 3 files written, got %d", result.Files)
+	if result.Files != 2 {
+		t.Fatalf("expected 2 files written, got %d", result.Files)
 	}
 
 	raw, err := os.ReadFile(configPath)
@@ -156,25 +154,17 @@ func TestInstallGeminiCLIInjectsMCPConfig(t *testing.T) {
 		t.Fatalf("expected FIRST ACTION REQUIRED guidance in system prompt")
 	}
 
+	// GEMINI_SYSTEM_MD should NOT be set (it breaks Gemini outside $HOME)
 	envPath := filepath.Join(home, ".gemini", ".env")
-	envRaw, err := os.ReadFile(envPath)
-	if err != nil {
-		t.Fatalf("read gemini .env: %v", err)
-	}
-	if !strings.Contains(string(envRaw), "GEMINI_SYSTEM_MD=1") {
-		t.Fatalf("expected GEMINI_SYSTEM_MD=1 in .env")
+	if _, err := os.Stat(envPath); err == nil {
+		envRaw, _ := os.ReadFile(envPath)
+		if strings.Contains(string(envRaw), "GEMINI_SYSTEM_MD") {
+			t.Fatalf("GEMINI_SYSTEM_MD should not be present in .env, got:\n%s", string(envRaw))
+		}
 	}
 
 	if _, err := Install("gemini-cli"); err != nil {
 		t.Fatalf("second install should be idempotent: %v", err)
-	}
-
-	envRaw2, err := os.ReadFile(envPath)
-	if err != nil {
-		t.Fatalf("read gemini .env after second install: %v", err)
-	}
-	if strings.Count(string(envRaw2), "GEMINI_SYSTEM_MD=1") != 1 {
-		t.Fatalf("expected exactly one GEMINI_SYSTEM_MD line, got:\n%s", string(envRaw2))
 	}
 }
 
@@ -678,10 +668,12 @@ func TestPathHelpersAcrossOSVariants(t *testing.T) {
 
 	runtimeGOOS = "windows"
 	t.Setenv("APPDATA", "C:/AppData/Roaming")
-	if got := openCodeConfigPath(); got != filepath.Join("C:/AppData/Roaming", "opencode", "opencode.json") {
+	t.Setenv("XDG_CONFIG_HOME", "")
+	// OpenCode uses ~/.config/opencode/ on ALL platforms, ignoring %APPDATA%
+	if got := openCodeConfigPath(); got != filepath.Join("/home/tester", ".config", "opencode", "opencode.json") {
 		t.Fatalf("unexpected windows openCodeConfigPath: %s", got)
 	}
-	if got := openCodePluginDir(); got != filepath.Join("C:/AppData/Roaming", "opencode", "plugins") {
+	if got := openCodePluginDir(); got != filepath.Join("/home/tester", ".config", "opencode", "plugins") {
 		t.Fatalf("unexpected windows openCodePluginDir: %s", got)
 	}
 	if got := geminiConfigPath(); got != filepath.Join("C:/AppData/Roaming", "gemini", "settings.json") {
@@ -692,10 +684,11 @@ func TestPathHelpersAcrossOSVariants(t *testing.T) {
 	}
 
 	t.Setenv("APPDATA", "")
-	if got := openCodeConfigPath(); got != filepath.Join("/home/tester", "AppData", "Roaming", "opencode", "opencode.json") {
+	// OpenCode still uses ~/.config/opencode/ even without APPDATA
+	if got := openCodeConfigPath(); got != filepath.Join("/home/tester", ".config", "opencode", "opencode.json") {
 		t.Fatalf("unexpected windows fallback openCodeConfigPath: %s", got)
 	}
-	if got := openCodePluginDir(); got != filepath.Join("/home/tester", "AppData", "Roaming", "opencode", "plugins") {
+	if got := openCodePluginDir(); got != filepath.Join("/home/tester", ".config", "opencode", "plugins") {
 		t.Fatalf("unexpected windows fallback openCodePluginDir: %s", got)
 	}
 	if got := geminiConfigPath(); got != filepath.Join("/home/tester", "AppData", "Roaming", "gemini", "settings.json") {
@@ -749,17 +742,6 @@ func TestInstallGeminiCLIErrorPropagation(t *testing.T) {
 		}
 	})
 
-	t.Run("ensure env fails", func(t *testing.T) {
-		resetSetupSeams(t)
-		injectGeminiMCPFn = func(string) error { return nil }
-		writeGeminiSystemPromptFn = func() error { return nil }
-		ensureGeminiEnvOverrideFn = func() error { return errors.New("env failed") }
-
-		_, err := installGeminiCLI()
-		if err == nil || !strings.Contains(err.Error(), "env failed") {
-			t.Fatalf("expected env failure, got %v", err)
-		}
-	})
 }
 
 func TestInstallCodexErrorPropagation(t *testing.T) {
@@ -921,7 +903,7 @@ func TestGeminiAndCodexHelpersErrorPaths(t *testing.T) {
 		}
 	})
 
-	t.Run("ensureGeminiEnvOverride replaces existing value", func(t *testing.T) {
+	t.Run("removeGeminiEnvOverride strips GEMINI_SYSTEM_MD line", func(t *testing.T) {
 		resetSetupSeams(t)
 		home := useTestHome(t)
 		runtimeGOOS = "linux"
@@ -930,51 +912,26 @@ func TestGeminiAndCodexHelpersErrorPaths(t *testing.T) {
 		if err := os.MkdirAll(filepath.Dir(envPath), 0755); err != nil {
 			t.Fatalf("mkdir env dir: %v", err)
 		}
-		if err := os.WriteFile(envPath, []byte("OTHER=1\r\nGEMINI_SYSTEM_MD=0\r\n"), 0644); err != nil {
+		if err := os.WriteFile(envPath, []byte("OTHER=1\r\nGEMINI_SYSTEM_MD=1\r\n"), 0644); err != nil {
 			t.Fatalf("write env file: %v", err)
 		}
 
-		if err := ensureGeminiEnvOverride(); err != nil {
-			t.Fatalf("ensureGeminiEnvOverride failed: %v", err)
-		}
-		raw, err := os.ReadFile(envPath)
-		if err != nil {
-			t.Fatalf("read env file: %v", err)
-		}
-		text := string(raw)
-		if strings.Count(text, "GEMINI_SYSTEM_MD=1") != 1 || strings.Contains(text, "GEMINI_SYSTEM_MD=0") {
-			t.Fatalf("expected single GEMINI_SYSTEM_MD=1, got:\n%s", text)
-		}
-	})
-
-	t.Run("ensureGeminiEnvOverride appends line to non-empty env", func(t *testing.T) {
-		resetSetupSeams(t)
-		home := useTestHome(t)
-		runtimeGOOS = "linux"
-
-		envPath := filepath.Join(home, ".gemini", ".env")
-		if err := os.MkdirAll(filepath.Dir(envPath), 0755); err != nil {
-			t.Fatalf("mkdir env dir: %v", err)
-		}
-		if err := os.WriteFile(envPath, []byte("OTHER=1\n"), 0644); err != nil {
-			t.Fatalf("write env file: %v", err)
-		}
-
-		if err := ensureGeminiEnvOverride(); err != nil {
-			t.Fatalf("ensureGeminiEnvOverride failed: %v", err)
-		}
+		removeGeminiEnvOverride()
 
 		raw, err := os.ReadFile(envPath)
 		if err != nil {
 			t.Fatalf("read env file: %v", err)
 		}
 		text := string(raw)
-		if !strings.Contains(text, "OTHER=1\nGEMINI_SYSTEM_MD=1\n") {
-			t.Fatalf("expected appended GEMINI_SYSTEM_MD line, got:\n%s", text)
+		if strings.Contains(text, "GEMINI_SYSTEM_MD") {
+			t.Fatalf("expected GEMINI_SYSTEM_MD removed, got:\n%s", text)
+		}
+		if !strings.Contains(text, "OTHER=1") {
+			t.Fatalf("expected OTHER=1 preserved, got:\n%s", text)
 		}
 	})
 
-	t.Run("ensureGeminiEnvOverride already set is no-op", func(t *testing.T) {
+	t.Run("removeGeminiEnvOverride deletes empty env file", func(t *testing.T) {
 		resetSetupSeams(t)
 		home := useTestHome(t)
 		runtimeGOOS = "linux"
@@ -987,79 +944,20 @@ func TestGeminiAndCodexHelpersErrorPaths(t *testing.T) {
 			t.Fatalf("write env file: %v", err)
 		}
 
-		writeCalls := 0
-		writeFileFn = func(path string, data []byte, perm os.FileMode) error {
-			writeCalls++
-			return os.WriteFile(path, data, perm)
-		}
+		removeGeminiEnvOverride()
 
-		if err := ensureGeminiEnvOverride(); err != nil {
-			t.Fatalf("ensureGeminiEnvOverride failed: %v", err)
-		}
-		if writeCalls != 0 {
-			t.Fatalf("expected no write when line already correct, got %d writes", writeCalls)
+		if _, err := os.Stat(envPath); !os.IsNotExist(err) {
+			t.Fatalf("expected env file deleted when only GEMINI_SYSTEM_MD was present")
 		}
 	})
 
-	t.Run("ensureGeminiEnvOverride write error when replacing", func(t *testing.T) {
+	t.Run("removeGeminiEnvOverride no-op when file missing", func(t *testing.T) {
 		resetSetupSeams(t)
-		home := useTestHome(t)
+		_ = useTestHome(t)
 		runtimeGOOS = "linux"
 
-		envPath := filepath.Join(home, ".gemini", ".env")
-		if err := os.MkdirAll(filepath.Dir(envPath), 0755); err != nil {
-			t.Fatalf("mkdir env dir: %v", err)
-		}
-		if err := os.WriteFile(envPath, []byte("GEMINI_SYSTEM_MD=0\n"), 0644); err != nil {
-			t.Fatalf("write env file: %v", err)
-		}
-
-		writeFileFn = func(string, []byte, os.FileMode) error {
-			return errors.New("write env boom")
-		}
-
-		err := ensureGeminiEnvOverride()
-		if err == nil || !strings.Contains(err.Error(), "write gemini env file") {
-			t.Fatalf("expected write gemini env file error, got %v", err)
-		}
-	})
-
-	t.Run("ensureGeminiEnvOverride write error when appending", func(t *testing.T) {
-		resetSetupSeams(t)
-		home := useTestHome(t)
-		runtimeGOOS = "linux"
-
-		envPath := filepath.Join(home, ".gemini", ".env")
-		if err := os.MkdirAll(filepath.Dir(envPath), 0755); err != nil {
-			t.Fatalf("mkdir env dir: %v", err)
-		}
-		if err := os.WriteFile(envPath, []byte("OTHER=1\n"), 0644); err != nil {
-			t.Fatalf("write env file: %v", err)
-		}
-
-		writeFileFn = func(string, []byte, os.FileMode) error {
-			return errors.New("append write boom")
-		}
-
-		err := ensureGeminiEnvOverride()
-		if err == nil || !strings.Contains(err.Error(), "write gemini env file") {
-			t.Fatalf("expected write gemini env file error, got %v", err)
-		}
-	})
-
-	t.Run("ensureGeminiEnvOverride create dir error", func(t *testing.T) {
-		resetSetupSeams(t)
-		blocked := filepath.Join(t.TempDir(), "home-as-file")
-		if err := os.WriteFile(blocked, []byte("x"), 0644); err != nil {
-			t.Fatalf("write home file: %v", err)
-		}
-		userHomeDir = func() (string, error) { return blocked, nil }
-		runtimeGOOS = "linux"
-
-		err := ensureGeminiEnvOverride()
-		if err == nil || !strings.Contains(err.Error(), "create gemini env dir") {
-			t.Fatalf("expected create gemini env dir error, got %v", err)
-		}
+		// should not panic or error
+		removeGeminiEnvOverride()
 	})
 
 	t.Run("writeGeminiSystemPrompt create dir error", func(t *testing.T) {
@@ -1281,21 +1179,6 @@ func TestAdditionalHelperBranches(t *testing.T) {
 		}
 	})
 
-	t.Run("ensureGeminiEnvOverride read error", func(t *testing.T) {
-		resetSetupSeams(t)
-		home := useTestHome(t)
-		runtimeGOOS = "linux"
-
-		envPath := filepath.Join(home, ".gemini", ".env")
-		if err := os.MkdirAll(envPath, 0755); err != nil {
-			t.Fatalf("create env path as dir: %v", err)
-		}
-
-		err := ensureGeminiEnvOverride()
-		if err == nil || !strings.Contains(err.Error(), "read gemini env file") {
-			t.Fatalf("expected read env error, got %v", err)
-		}
-	})
 
 	t.Run("injectGeminiMCP read error", func(t *testing.T) {
 		configPath := filepath.Join(t.TempDir(), "settings.json")
@@ -1752,9 +1635,10 @@ func TestOpenCodeConfigPathXDGWithJSONC(t *testing.T) {
 
 func TestOpenCodeConfigPathWindowsWithJSONC(t *testing.T) {
 	resetSetupSeams(t)
-	_ = useTestHome(t)
+	home := useTestHome(t)
 	runtimeGOOS = "windows"
 	t.Setenv("APPDATA", "C:/Users/test/AppData/Roaming")
+	t.Setenv("XDG_CONFIG_HOME", "")
 
 	statFn = func(name string) (os.FileInfo, error) {
 		if strings.HasSuffix(name, "opencode.jsonc") {
@@ -1764,7 +1648,8 @@ func TestOpenCodeConfigPathWindowsWithJSONC(t *testing.T) {
 	}
 
 	got := openCodeConfigPath()
-	expected := filepath.Join("C:/Users/test/AppData/Roaming", "opencode", "opencode.jsonc")
+	// OpenCode uses ~/.config/opencode/ on all platforms, not %APPDATA%
+	expected := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
 	if got != expected {
 		t.Fatalf("expected %s, got %s", expected, got)
 	}

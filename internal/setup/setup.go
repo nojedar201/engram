@@ -36,8 +36,7 @@ var (
 	injectOpenCodeMCPFn                = injectOpenCodeMCP
 	injectGeminiMCPFn                  = injectGeminiMCP
 	writeGeminiSystemPromptFn          = writeGeminiSystemPrompt
-	ensureGeminiEnvOverrideFn          = ensureGeminiEnvOverride
-	writeCodexMemoryInstructionFilesFn = writeCodexMemoryInstructionFiles
+writeCodexMemoryInstructionFilesFn = writeCodexMemoryInstructionFiles
 	injectCodexMCPFn                   = injectCodexMCP
 	injectCodexMemoryConfigFn          = injectCodexMemoryConfig
 	addClaudeCodeAllowlistFn           = AddClaudeCodeAllowlist
@@ -351,20 +350,12 @@ func openCodeConfigPath() string {
 func openCodeConfigDir() string {
 	home, _ := userHomeDir()
 
-	switch runtimeGOOS {
-	case "darwin", "linux":
-		if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-			return filepath.Join(xdg, "opencode")
-		}
-		return filepath.Join(home, ".config", "opencode")
-	case "windows":
-		if appData := os.Getenv("APPDATA"); appData != "" {
-			return filepath.Join(appData, "opencode")
-		}
-		return filepath.Join(home, "AppData", "Roaming", "opencode")
-	default:
-		return filepath.Join(home, ".config", "opencode")
+	// OpenCode reads from ~/.config/opencode/ on ALL platforms (including Windows),
+	// ignoring the Windows %APPDATA% convention. Match that behavior.
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		return filepath.Join(xdg, "opencode")
 	}
+	return filepath.Join(home, ".config", "opencode")
 }
 
 // stripJSONC removes single-line (//) and multi-line (/* */) comments
@@ -560,14 +551,16 @@ func installGeminiCLI() (*Result, error) {
 		return nil, err
 	}
 
-	if err := ensureGeminiEnvOverrideFn(); err != nil {
-		return nil, err
-	}
+	// Clean up GEMINI_SYSTEM_MD if previously set — it causes Gemini to look
+	// for system.md relative to CWD instead of ~/.gemini/, breaking any
+	// directory that isn't $HOME. Gemini CLI already reads ~/.gemini/system.md
+	// by default without this env var.
+	removeGeminiEnvOverride()
 
 	return &Result{
 		Agent:       "gemini-cli",
 		Destination: filepath.Dir(path),
-		Files:       3,
+		Files:       2,
 	}, nil
 }
 
@@ -640,43 +633,35 @@ func writeGeminiSystemPrompt() error {
 	return nil
 }
 
-func ensureGeminiEnvOverride() error {
+// removeGeminiEnvOverride removes any GEMINI_SYSTEM_MD line from ~/.gemini/.env.
+// Previous versions of engram added this line, but it causes Gemini CLI to look
+// for system.md relative to CWD instead of ~/.gemini/. Best-effort cleanup.
+func removeGeminiEnvOverride() {
 	envPath := geminiEnvPath()
-	if err := os.MkdirAll(filepath.Dir(envPath), 0755); err != nil {
-		return fmt.Errorf("create gemini env dir: %w", err)
-	}
-
-	line := "GEMINI_SYSTEM_MD=1"
 	content, err := readFileFn(envPath)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("read gemini env file: %w", err)
+	if err != nil {
+		return // file doesn't exist or unreadable — nothing to clean
 	}
 
 	text := strings.ReplaceAll(string(content), "\r\n", "\n")
-	for _, existing := range strings.Split(text, "\n") {
-		trimmed := strings.TrimSpace(existing)
-		if trimmed == line || strings.HasPrefix(trimmed, "GEMINI_SYSTEM_MD=") {
-			if trimmed != line {
-				text = strings.ReplaceAll(text, existing, line)
-				if err := writeFileFn(envPath, []byte(strings.TrimSpace(text)+"\n"), 0644); err != nil {
-					return fmt.Errorf("write gemini env file: %w", err)
-				}
-			}
-			return nil
+	var lines []string
+	changed := false
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "GEMINI_SYSTEM_MD=") {
+			changed = true
+			continue
+		}
+		lines = append(lines, line)
+	}
+
+	if changed {
+		result := strings.TrimSpace(strings.Join(lines, "\n"))
+		if result == "" {
+			os.Remove(envPath) // delete empty env file
+		} else {
+			_ = writeFileFn(envPath, []byte(result+"\n"), 0644)
 		}
 	}
-
-	if strings.TrimSpace(text) == "" {
-		text = line + "\n"
-	} else {
-		text = strings.TrimRight(text, "\n") + "\n" + line + "\n"
-	}
-
-	if err := writeFileFn(envPath, []byte(text), 0644); err != nil {
-		return fmt.Errorf("write gemini env file: %w", err)
-	}
-
-	return nil
 }
 
 // ─── Codex ───────────────────────────────────────────────────────────────────
@@ -827,22 +812,7 @@ func upsertTopLevelTOMLString(content, key, value string) string {
 // ─── Platform paths ──────────────────────────────────────────────────────────
 
 func openCodePluginDir() string {
-	home, _ := userHomeDir()
-
-	switch runtimeGOOS {
-	case "darwin", "linux":
-		if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-			return filepath.Join(xdg, "opencode", "plugins")
-		}
-		return filepath.Join(home, ".config", "opencode", "plugins")
-	case "windows":
-		if appData := os.Getenv("APPDATA"); appData != "" {
-			return filepath.Join(appData, "opencode", "plugins")
-		}
-		return filepath.Join(home, "AppData", "Roaming", "opencode", "plugins")
-	default:
-		return filepath.Join(home, ".config", "opencode", "plugins")
-	}
+	return filepath.Join(openCodeConfigDir(), "plugins")
 }
 
 func geminiConfigPath() string {

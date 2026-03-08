@@ -639,6 +639,8 @@ func handleSave(s *store.Store) server.ToolHandlerFunc {
 		// Ensure the session exists
 		s.CreateSession(sessionID, project, "")
 
+		truncated := len(content) > s.MaxObservationLength()
+
 		_, err := s.AddObservation(store.AddObservationParams{
 			SessionID: sessionID,
 			Type:      typ,
@@ -652,11 +654,14 @@ func handleSave(s *store.Store) server.ToolHandlerFunc {
 			return mcp.NewToolResultError("Failed to save: " + err.Error()), nil
 		}
 
+		msg := fmt.Sprintf("Memory saved: %q (%s)", title, typ)
 		if topicKey == "" && suggestedTopicKey != "" {
-			return mcp.NewToolResultText(fmt.Sprintf("Memory saved: %q (%s)\nSuggested topic_key: %s", title, typ, suggestedTopicKey)), nil
+			msg += fmt.Sprintf("\nSuggested topic_key: %s", suggestedTopicKey)
 		}
-
-		return mcp.NewToolResultText(fmt.Sprintf("Memory saved: %q (%s)", title, typ)), nil
+		if truncated {
+			msg += fmt.Sprintf("\n⚠ WARNING: Content was truncated from %d to %d chars. Consider splitting into smaller observations.", len(content), s.MaxObservationLength())
+		}
+		return mcp.NewToolResultText(msg), nil
 	}
 }
 
@@ -710,12 +715,21 @@ func handleUpdate(s *store.Store) server.ToolHandlerFunc {
 			return mcp.NewToolResultError("provide at least one field to update"), nil
 		}
 
+		var contentLen int
+		if update.Content != nil {
+			contentLen = len(*update.Content)
+		}
+
 		obs, err := s.UpdateObservation(id, update)
 		if err != nil {
 			return mcp.NewToolResultError("Failed to update memory: " + err.Error()), nil
 		}
 
-		return mcp.NewToolResultText(fmt.Sprintf("Memory updated: #%d %q (%s, scope=%s)", obs.ID, obs.Title, obs.Type, obs.Scope)), nil
+		msg := fmt.Sprintf("Memory updated: #%d %q (%s, scope=%s)", obs.ID, obs.Title, obs.Type, obs.Scope)
+		if contentLen > s.MaxObservationLength() {
+			msg += fmt.Sprintf("\n⚠ WARNING: Content was truncated from %d to %d chars. Consider splitting into smaller observations.", contentLen, s.MaxObservationLength())
+		}
+		return mcp.NewToolResultText(msg), nil
 	}
 }
 

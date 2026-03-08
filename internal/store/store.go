@@ -250,11 +250,16 @@ func DefaultConfig() Config {
 	home, _ := os.UserHomeDir()
 	return Config{
 		DataDir:              filepath.Join(home, ".engram"),
-		MaxObservationLength: 2000,
+		MaxObservationLength: 50000,
 		MaxContextResults:    20,
 		MaxSearchResults:     20,
 		DedupeWindow:         15 * time.Minute,
 	}
+}
+
+// MaxObservationLength returns the configured maximum content length for observations.
+func (s *Store) MaxObservationLength() int {
+	return s.cfg.MaxObservationLength
 }
 
 // ─── Store ───────────────────────────────────────────────────────────────────
