@@ -58,7 +58,7 @@ engram serve &
 
 > **Windows**: OpenCode uses `~/.config/opencode/` on Windows too (it does not read `%APPDATA%\opencode\`). `engram setup opencode` writes to `~/.config/opencode/plugins/` and `~/.config/opencode/opencode.json`. To run the server in the background: `Start-Process engram -ArgumentList "serve" -WindowStyle Hidden` (PowerShell) or just run `engram serve` in a separate terminal.
 
-**Alternative: Manual MCP-only setup** (no plugin, all 16 tools by default):
+**Alternative: Manual MCP-only setup** (no plugin, all 17 tools by default):
 
 Add to your `opencode.json` (global: `~/.config/opencode/opencode.json` on all platforms, or project-level):
 
@@ -99,7 +99,7 @@ engram setup claude-code
 
 During setup, you'll be asked whether to add engram tools to `~/.claude/settings.json` permissions allowlist — this prevents Claude Code from prompting for confirmation on every memory operation.
 
-**Option C: Bare MCP** — all 16 tools by default, no session management:
+**Option C: Bare MCP** — all 17 tools by default, no session management:
 
 Add to your `.claude/settings.json` (project) or `~/.claude/settings.json` (global):
 
@@ -386,6 +386,67 @@ Save proactively after significant work. After context resets, call mem_context 
 ```
 
 This is the **nuclear option** — system prompts survive everything, including compaction.
+
+---
+
+## Conflict Surfacing (automatic)
+
+When you save a memory with `mem_save`, Engram automatically scans for similar existing observations using FTS5 full-text search. If any candidates are found above a relevance threshold, the response includes a `candidates[]` array and `judgment_required: true`. Nothing to configure — this runs on every save.
+
+### What the agent sees
+
+`mem_save` returns an enriched envelope when candidates exist:
+
+```json
+{
+  "result": "Memory saved: \"...\"\nCONFLICT REVIEW PENDING — 2 candidate(s); use mem_judge to record verdicts.",
+  "id": 42,
+  "sync_id": "obs_abc123",
+  "judgment_required": true,
+  "judgment_status": "pending",
+  "judgment_id": "rel-<hex>",
+  "candidates": [
+    {
+      "id": 18,
+      "sync_id": "obs_xyz789",
+      "title": "We use sessions for auth",
+      "type": "decision",
+      "score": -3.14,
+      "judgment_id": "rel-<hex-for-this-pair>"
+    }
+  ]
+}
+```
+
+When no candidates are found, `judgment_required` is `false` and no `candidates` field is present. The `result` string is unchanged.
+
+### How the agent resolves conflicts
+
+The agent iterates `candidates[]` and calls `mem_judge` once per entry, using that entry's own `judgment_id`. The agent does NOT use the top-level `judgment_id` for multiple candidates — each candidate has its own.
+
+The agent's built-in heuristic (from `serverInstructions`) decides when to ask the user versus resolve autonomously:
+
+- **Ask the user** when confidence is below 0.7, OR when the chosen relation is `supersedes` or `conflicts_with` AND the observation type is `architecture`, `policy`, or `decision`.
+- **Resolve silently** when confidence >= 0.7 AND the relation is `related`, `compatible`, `scoped`, or `not_conflict`.
+
+When asking, the agent raises it naturally in the conversation — not as a blocking CLI prompt or dashboard action.
+
+### How the user sees this
+
+The user sees it in the normal conversation flow. Example:
+
+> "I noticed memory #18 ('We use sessions for auth') might conflict with what we just saved. Want me to mark the new one as superseding it, or are they about different scopes? I can also mark them as compatible if both still apply."
+
+There is no separate dashboard or conflict list in Phase 1.
+
+### What happens after judgment
+
+Once the agent calls `mem_judge` with a verdict:
+- The relation row is persisted with `judgment_status: "judged"` and the chosen `relation`.
+- If the relation is `supersedes`, future `mem_search` results will show `supersedes:` / `superseded_by:` annotations for the affected observations.
+- If the relation is `conflicts_with`, `compatible`, `related`, `scoped`, or `not_conflict`, the judgment is stored in `memory_relations` but no annotation appears in search results (Phase 1 scope).
+
+Nothing breaks if `mem_judge` is never called — pending relations accumulate unjudged but do not affect other operations.
 
 ---
 

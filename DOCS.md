@@ -14,7 +14,7 @@ This is the complete technical reference for Engram. For getting started, see th
 |---------|-----------------|
 | [Database Schema](#database-schema) | Tables, FTS5, SQLite config |
 | [HTTP API](#http-api-endpoints) | All REST endpoints with request/response details |
-| [MCP Tools](#mcp-tools-16-tools) | Detailed reference for all 16 memory tools |
+| [MCP Tools](#mcp-tools-17-tools) | Detailed reference for all 17 memory tools |
 | [MCP Project Resolution](#mcp-project-resolution) | Auto-detection algorithm, response envelope, tool categories |
 | [Memory Protocol](#memory-protocol) | When/how agents should use the tools |
 | [Project Name Normalization](#project-name-normalization) | Auto-detection, normalization, similar-project warnings |
@@ -387,7 +387,7 @@ Returns success even when cwd is ambiguous — empty `project` + non-empty `avai
 
 ---
 
-## MCP Tools (16 tools)
+## MCP Tools (17 tools)
 
 ### mem_search
 
@@ -469,6 +469,21 @@ Extract structured learnings from text output. Looks for `## Key Learnings:` sec
 ### mem_current_project
 
 Detect the current project from the working directory. Returns `project`, `project_source`, `project_path`, `cwd`, `available_projects`, and `warning`. Never returns an error — even on ambiguous cwd it returns success with an empty `project` and non-empty `available_projects`. Recommended as the first call when starting a session.
+
+### mem_judge
+
+Record a verdict on a pending memory conflict. When `mem_save` returns `candidates[]` and `judgment_required: true`, the agent inspects the candidates and calls `mem_judge` to mark the relation between the saved memory and a candidate.
+
+Parameters:
+- **judgment_id** (required): the `judgment_id` returned by `mem_save`
+- **relation** (required): `related` | `compatible` | `scoped` | `conflicts_with` | `supersedes` | `not_conflict`
+- **reason** (required): short text explaining the verdict
+- **evidence** (optional): free-form text or JSON the agent can use to justify the call (e.g., quoted excerpts from both memories)
+- **confidence** (optional, default 1.0): 0.0–1.0; if the value is below 0.7 the agent SHOULD ask the user before calling
+
+Re-judging an existing relation overwrites it (deliberate revision). Two agents judging the same pair persist as separate rows — Phase 1 surfaces both; cross-actor reconciliation is Phase 2.
+
+Search results subsequently expose annotation lines like `supersedes: #<id>` and `superseded_by: #<id>` so the recalling agent sees relevant verdicts at-a-glance. The structured `supersedes[]`, `superseded_by[]`, and `conflicts[]` fields are also attached per result.
 
 ---
 

@@ -69,16 +69,17 @@ That's it. No Node.js, no Python, no Docker. **One binary, one SQLite file.**
 
 Full details on session lifecycle, topic keys, and memory hygiene → [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
-## MCP Tools (16)
+## MCP Tools (17)
 
 | Category | Tools |
 |----------|-------|
 | **Save & Update** | `mem_save`, `mem_update`, `mem_delete`, `mem_suggest_topic_key` |
 | **Search & Retrieve** | `mem_search`, `mem_context`, `mem_timeline`, `mem_get_observation` |
 | **Session Lifecycle** | `mem_session_start`, `mem_session_end`, `mem_session_summary` |
+| **Conflict Surfacing** | `mem_judge` |
 | **Utilities** | `mem_save_prompt`, `mem_stats`, `mem_capture_passive`, `mem_merge_projects`, `mem_current_project` |
 
-Full tool reference with parameters → [DOCS.md#mcp-tools-16-tools](DOCS.md#mcp-tools-16-tools)
+Full tool reference with parameters → [DOCS.md#mcp-tools-17-tools](DOCS.md#mcp-tools-17-tools)
 
 ## Terminal UI
 
