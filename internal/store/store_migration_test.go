@@ -712,3 +712,112 @@ func TestMigrate_PostPhase1_PreservesExistingRows(t *testing.T) {
 		t.Errorf("sync_apply_deferred has %d rows after migration, want 0 (migration must not pre-populate)", deferredCount)
 	}
 }
+
+// ─── Phase 3 / A: Migration test infra for idx_memrel_status_created ──────────
+
+// newTestStoreWithLegacySchemaPostP2 creates a temporary SQLite database using
+// the post-Phase-2 DDL (legacyDDLPostMemoryConflictAudit), optionally seeds
+// relation fixture rows, then calls New(cfg) so that migrate() runs against
+// that database.
+//
+// This is the Phase 3 equivalent of newTestStoreWithLegacySchemaPostP1: it
+// seeds the v_(N+2) baseline so that Phase 3 migration tests can assert that
+// idx_memrel_status_created is added by migrate().
+func newTestStoreWithLegacySchemaPostP2(t *testing.T, relRows []legacyRelationRow) *Store {
+	t.Helper()
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "engram.db")
+
+	// 1. Open raw DB and apply post-Phase-2 DDL.
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("newTestStoreWithLegacySchemaPostP2: open raw db: %v", err)
+	}
+
+	if _, err := raw.Exec("PRAGMA journal_mode = WAL"); err != nil {
+		raw.Close()
+		t.Fatalf("newTestStoreWithLegacySchemaPostP2: WAL pragma: %v", err)
+	}
+	if _, err := raw.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		raw.Close()
+		t.Fatalf("newTestStoreWithLegacySchemaPostP2: foreign_keys pragma: %v", err)
+	}
+
+	if _, err := raw.Exec(legacyDDLPostMemoryConflictAudit); err != nil {
+		raw.Close()
+		t.Fatalf("newTestStoreWithLegacySchemaPostP2: apply legacy DDL: %v", err)
+	}
+
+	// 2. Insert optional relation fixture rows.
+	for _, row := range relRows {
+		if _, err := raw.Exec(
+			`INSERT INTO memory_relations (sync_id, source_id, target_id, relation, judgment_status)
+			 VALUES (?, ?, ?, ?, ?)`,
+			row.syncID, row.sourceID, row.targetID, row.relation, row.judgmentStatus,
+		); err != nil {
+			raw.Close()
+			t.Fatalf("newTestStoreWithLegacySchemaPostP2: insert relation fixture %+v: %v", row, err)
+		}
+	}
+
+	// 3. Close raw DB so the file is released before New() re-opens it.
+	if err := raw.Close(); err != nil {
+		t.Fatalf("newTestStoreWithLegacySchemaPostP2: close raw db: %v", err)
+	}
+
+	// 4. Open via New() — this calls migrate() against the post-Phase-2 DB.
+	cfg := mustDefaultConfig(t)
+	cfg.DataDir = dir
+
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("newTestStoreWithLegacySchemaPostP2: New(cfg): %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	return s
+}
+
+// TestMigrate_AddsIdxMemrelStatusCreated asserts that running migrate() on a
+// v_(N+2) database (post-Phase-2, pre-Phase-3) creates the composite index
+// idx_memrel_status_created on memory_relations(judgment_status, created_at DESC).
+//
+// RED: fails until Phase B appends the CREATE INDEX statement to migrate().
+func TestMigrate_AddsIdxMemrelStatusCreated(t *testing.T) {
+	// Seed a handful of memory_relations rows with mixed judgment_status values
+	// so the index is exercised by a real query in the triangulation assertion.
+	relRows := []legacyRelationRow{
+		{syncID: "rel-p3-001", sourceID: "obs-p3-src-1", targetID: "obs-p3-tgt-1", relation: "conflicts_with", judgmentStatus: "pending"},
+		{syncID: "rel-p3-002", sourceID: "obs-p3-src-2", targetID: "obs-p3-tgt-2", relation: "related", judgmentStatus: "judged"},
+		{syncID: "rel-p3-003", sourceID: "obs-p3-src-3", targetID: "obs-p3-tgt-3", relation: "conflicts_with", judgmentStatus: "pending"},
+	}
+	s := newTestStoreWithLegacySchemaPostP2(t, relRows)
+
+	// 1. Assert idx_memrel_status_created exists in sqlite_master.
+	//    This will FAIL (RED) until Phase B adds it to migrate().
+	var idxName string
+	err := s.db.QueryRow(
+		`SELECT name FROM sqlite_master
+		 WHERE type='index' AND name='idx_memrel_status_created'`,
+	).Scan(&idxName)
+	if err != nil {
+		t.Fatalf("idx_memrel_status_created not found after migrate(): %v — index not yet added by migrate() (expected RED until Phase B)", err)
+	}
+	if idxName != "idx_memrel_status_created" {
+		t.Errorf("index name = %q, want 'idx_memrel_status_created'", idxName)
+	}
+
+	// 2. Triangulation: confirm the index covers the correct columns by querying
+	//    using the indexed columns and asserting the result count matches seeded data.
+	//    A query that filters on judgment_status should work correctly via the index.
+	var pendingCount int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM memory_relations WHERE judgment_status = 'pending'`,
+	).Scan(&pendingCount); err != nil {
+		t.Fatalf("count pending relations: %v", err)
+	}
+	if pendingCount != 2 {
+		t.Errorf("pending relations count = %d, want 2 (seeded rows with judgment_status='pending')", pendingCount)
+	}
+}

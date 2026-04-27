@@ -963,6 +963,7 @@ func TestResolveToolsAgentProfile(t *testing.T) {
 		"mem_update",          // skills explicitly say "use mem_update when you have an exact ID to correct"
 		"mem_current_project", // added REQ-313: discovery tool recommended first call
 		"mem_judge",           // REQ-003: conflict verdict tool (Phase D)
+		"mem_compare",         // REQ-011: persist agent-judged semantic verdict (Phase G)
 	}
 	for _, tool := range expectedTools {
 		if !result[tool] {
@@ -1007,13 +1008,13 @@ func TestResolveToolsCombinedProfiles(t *testing.T) {
 		t.Fatal("expected non-nil allowlist for combined profiles")
 	}
 
-	// Should have all 17 tools (16 prior + mem_judge added in Phase D)
+	// Should have all 18 tools (17 prior + mem_compare added in Phase G)
 	allTools := []string{
 		"mem_save", "mem_search", "mem_context", "mem_session_summary",
 		"mem_session_start", "mem_session_end", "mem_get_observation",
 		"mem_suggest_topic_key", "mem_capture_passive", "mem_save_prompt",
 		"mem_update", "mem_delete", "mem_stats", "mem_timeline", "mem_merge_projects",
-		"mem_current_project", "mem_judge",
+		"mem_current_project", "mem_judge", "mem_compare",
 	}
 	for _, tool := range allTools {
 		if !result[tool] {
@@ -1599,7 +1600,7 @@ func TestNewServerWithToolsNilRegistersAll(t *testing.T) {
 		"mem_session_start", "mem_session_end", "mem_get_observation",
 		"mem_suggest_topic_key", "mem_capture_passive", "mem_save_prompt",
 		"mem_update", "mem_delete", "mem_stats", "mem_timeline", "mem_merge_projects",
-		"mem_current_project", "mem_judge",
+		"mem_current_project", "mem_judge", "mem_compare",
 	}
 
 	for _, name := range allTools {
@@ -1638,9 +1639,9 @@ func TestNewServerBackwardsCompatible(t *testing.T) {
 	srv := NewServer(s)
 	tools := srv.ListTools()
 
-	// 13 agent + 4 admin = 17 total (mem_judge added in Phase D)
-	if len(tools) != 17 {
-		t.Errorf("NewServer should register all 17 tools, got %d", len(tools))
+	// 14 agent + 4 admin = 18 total (mem_compare added in Phase G)
+	if len(tools) != 18 {
+		t.Errorf("NewServer should register all 18 tools, got %d", len(tools))
 	}
 }
 
@@ -1654,9 +1655,9 @@ func TestProfileConsistency(t *testing.T) {
 		combined[tool] = true
 	}
 
-	// 13 agent + 4 admin = 17 total (mem_judge added in Phase D)
-	if len(combined) != 17 {
-		t.Errorf("agent + admin should cover all 17 tools, got %d", len(combined))
+	// 14 agent + 4 admin = 18 total (mem_compare added in Phase G)
+	if len(combined) != 18 {
+		t.Errorf("agent + admin should cover all 18 tools, got %d", len(combined))
 	}
 
 	// Verify no overlap between profiles
@@ -1981,9 +1982,9 @@ func TestNewServerWithConfig(t *testing.T) {
 		t.Fatal("expected MCP server instance")
 	}
 	tools := srv.ListTools()
-	// Should have all 17 tools (13 agent + 4 admin; mem_judge added in Phase D)
-	if len(tools) != 17 {
-		t.Errorf("NewServerWithConfig should register all 17 tools, got %d", len(tools))
+	// Should have all 18 tools (14 agent + 4 admin; mem_compare added in Phase G)
+	if len(tools) != 18 {
+		t.Errorf("NewServerWithConfig should register all 18 tools, got %d", len(tools))
 	}
 }
 

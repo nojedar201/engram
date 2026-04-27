@@ -464,6 +464,75 @@ func TestApplyPulledMutation_DeferredOnFKMiss(t *testing.T) {
 	}
 }
 
+// F.1 — TestApplyPulledRelation_MalformedPayload_StraightToDead: a relation
+// mutation with a malformed (or incomplete) payload must go directly to
+// apply_status='dead' without retries. Decode errors are not retryable.
+//
+// Case (a): payload is not valid JSON.
+// Case (b): payload is valid JSON but missing required source_id / target_id.
+func TestApplyPulledRelation_MalformedPayload_StraightToDead(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+	}{
+		{
+			name:    "invalid JSON",
+			payload: "not valid json",
+		},
+		{
+			name:    "missing source_id and target_id",
+			payload: `{"relation_type":"conflicts"}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestStore(t)
+			if err := s.ensureSyncState(DefaultSyncTargetKey); err != nil {
+				t.Fatalf("ensureSyncState: %v", err)
+			}
+
+			relSyncID := newSyncID("rel-malformed")
+			m := SyncMutation{
+				Entity:    SyncEntityRelation,
+				EntityKey: relSyncID,
+				Op:        SyncOpUpsert,
+				Payload:   tc.payload,
+				Source:    SyncSourceRemote,
+				Seq:       1,
+				TargetKey: DefaultSyncTargetKey,
+			}
+
+			// ApplyPulledMutation must return nil — malformed payloads are
+			// ACK-ed (cursor advances) but written as dead to sync_apply_deferred.
+			if err := s.ApplyPulledMutation(DefaultSyncTargetKey, m); err != nil {
+				t.Fatalf("ApplyPulledMutation: expected nil for dead payload, got %v", err)
+			}
+
+			// The row must be in sync_apply_deferred with apply_status='dead'.
+			var applyStatus string
+			var retryCount int
+			if err := s.db.QueryRow(
+				`SELECT apply_status, retry_count FROM sync_apply_deferred WHERE sync_id = ?`, relSyncID,
+			).Scan(&applyStatus, &retryCount); err != nil {
+				t.Fatalf("scan deferred row: %v", err)
+			}
+			if applyStatus != "dead" {
+				t.Errorf("apply_status: want %q, got %q", "dead", applyStatus)
+			}
+			if retryCount != 0 {
+				t.Errorf("retry_count: want 0, got %d", retryCount)
+			}
+
+			// memory_relations must NOT have a row.
+			r := countRelationRows(t, s, relSyncID)
+			if r != 0 {
+				t.Errorf("expected 0 rows in memory_relations for dead payload; got %d", r)
+			}
+		})
+	}
+}
+
 // C.3d — ApplyPulledRelation_MultiActorSamePair: two mutations, same
 // (source, target) pair but different sync_id → two distinct rows (REQ-009).
 func TestApplyPulledRelation_MultiActorSamePair(t *testing.T) {

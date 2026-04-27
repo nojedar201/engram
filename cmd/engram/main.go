@@ -123,6 +123,10 @@ var (
 
 	// newObsidianWatcher is injectable for testing.
 	newObsidianWatcher = obsidian.NewWatcher
+
+	// agentRunnerFactory is injectable for testing. In production it delegates to
+	// llm.NewRunner; tests substitute a fake to avoid real CLI invocations.
+	agentRunnerFactory = defaultAgentRunnerFactory
 )
 
 type cloudSyncStatus struct {
@@ -562,6 +566,8 @@ func main() {
 		cmdSave(cfg)
 	case "timeline":
 		cmdTimeline(cfg)
+	case "conflicts":
+		cmdConflicts(cfg)
 	case "context":
 		cmdContext(cfg)
 	case "stats":
@@ -614,6 +620,13 @@ func cmdServe(cfg store.Config) {
 	defer s.Close()
 
 	srv := newHTTPServer(s, port)
+
+	// Wire the semantic runner factory and prompt builder for POST /conflicts/scan.
+	// Both live in cmd/engram so internal/server avoids a direct dependency on internal/llm.
+	srv.SetRunnerFactory(agentRunnerFactory)
+	srv.SetPromptBuilder(func(a, b store.ObservationSnippet) string {
+		return llmBuildPrompt(a, b)
+	})
 
 	// Graceful shutdown context — cancelled on SIGINT/SIGTERM.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2109,6 +2122,12 @@ Commands:
   search <query>     Search memories [--type TYPE] [--project PROJECT] [--scope SCOPE] [--limit N]
   save <title> <msg> Save a memory  [--type TYPE] [--project PROJECT] [--scope SCOPE]
   timeline <obs_id>  Show chronological context around an observation [--before N] [--after N]
+  conflicts <sub>   Inspect and manage memory conflict relations
+                       list     --project P  --status S  --since RFC3339  --limit N
+                       show     <relation_id>
+                       stats    --project P
+                       scan     --project P  [--dry-run]  [--apply]  [--max-insert N]
+                       deferred [--status S]  [--limit N]  [--inspect SYNC_ID]  [--replay]
   context [project]  Show recent context from previous sessions
   stats              Show memory system statistics
   export [file]      Export all memories to JSON (default: engram-export.json)

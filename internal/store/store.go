@@ -1024,6 +1024,14 @@ func (s *Store) migrate() error {
 		return err
 	}
 
+	// Phase 3b: composite index for conflict-audit list/count queries.
+	if _, err := s.execHook(s.db, `
+		CREATE INDEX IF NOT EXISTS idx_memrel_status_created
+			ON memory_relations(judgment_status, created_at DESC);
+	`); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -3621,8 +3629,8 @@ func (s *Store) ApplyPulledMutation(targetKey string, mutation SyncMutation) err
 			// For relation FK misses, write to sync_apply_deferred and ACK the seq
 			// so the cursor can advance. All other errors propagate and halt the pull.
 			if mutation.Entity == SyncEntityRelation && errors.Is(applyErr, ErrRelationFKMissing) {
-				log.Printf("[store] ApplyPulledMutation: relation FK miss entity_key=%s — deferring",
-					mutation.EntityKey)
+				log.Printf("[store] ApplyPulledMutation: relation FK miss seq=%d entity_key=%s — deferring",
+					mutation.Seq, mutation.EntityKey)
 				if _, deferErr := s.execHook(tx, `
 					INSERT INTO sync_apply_deferred
 						(sync_id, entity, payload, apply_status, retry_count, first_seen_at)
@@ -3632,6 +3640,23 @@ func (s *Store) ApplyPulledMutation(targetKey string, mutation SyncMutation) err
 						last_attempted_at  = datetime('now')
 				`, mutation.EntityKey, mutation.Entity, mutation.Payload); deferErr != nil {
 					return fmt.Errorf("ApplyPulledMutation: write deferred row: %w", deferErr)
+				}
+				// Fall through to advance the cursor (ACK the seq).
+			} else if mutation.Entity == SyncEntityRelation && errors.Is(applyErr, ErrApplyDead) {
+				// Payload is permanently undecodable — write directly as dead and ACK.
+				// There is no point retrying; a malformed payload will never become valid.
+				log.Printf("[store] ApplyPulledMutation: relation payload dead seq=%d entity_key=%s err=%v — marking dead",
+					mutation.Seq, mutation.EntityKey, applyErr)
+				if _, deferErr := s.execHook(tx, `
+					INSERT INTO sync_apply_deferred
+						(sync_id, entity, payload, apply_status, retry_count, first_seen_at)
+					VALUES (?, ?, ?, 'dead', 0, datetime('now'))
+					ON CONFLICT(sync_id) DO UPDATE SET
+						payload           = excluded.payload,
+						apply_status      = 'dead',
+						last_attempted_at = datetime('now')
+				`, mutation.EntityKey, mutation.Entity, mutation.Payload); deferErr != nil {
+					return fmt.Errorf("ApplyPulledMutation: write dead row: %w", deferErr)
 				}
 				// Fall through to advance the cursor (ACK the seq).
 			} else {
@@ -4739,6 +4764,12 @@ func (s *Store) applyRelationUpsertTx(tx *sql.Tx, mutation SyncMutation) error {
 	var p syncRelationPayload
 	if err := decodeSyncPayload([]byte(mutation.Payload), &p); err != nil {
 		return fmt.Errorf("%w: decode relation payload: %v", ErrApplyDead, err)
+	}
+
+	// Step 1b: required field validation — missing source_id or target_id is not
+	// a retryable FK miss; it is a permanent payload defect (ErrApplyDead).
+	if strings.TrimSpace(p.SourceID) == "" || strings.TrimSpace(p.TargetID) == "" {
+		return fmt.Errorf("%w: relation payload missing required source_id or target_id", ErrApplyDead)
 	}
 
 	// Step 2: FK precondition — both observations must exist locally (by sync_id).
@@ -5966,6 +5997,102 @@ func (s *Store) CountDeferredAndDead() (deferred, dead int, err error) {
 		return 0, 0, fmt.Errorf("CountDeferredAndDead: rows error: %w", err)
 	}
 	return deferred, dead, nil
+}
+
+// ─── Phase 3: ListDeferred / GetDeferred ─────────────────────────────────────
+
+// ListDeferred returns rows from sync_apply_deferred with optional status filter
+// and pagination. The payload field is decoded to map[string]any; on malformed
+// JSON, PayloadValid is false and PayloadRaw is preserved.
+func (s *Store) ListDeferred(opts ListDeferredOptions) ([]DeferredRow, error) {
+	query := `
+		SELECT sync_id, entity, payload, apply_status, retry_count,
+		       last_error, last_attempted_at, first_seen_at
+		FROM sync_apply_deferred
+		WHERE 1=1`
+	var args []any
+
+	if opts.Status != "" {
+		query += ` AND apply_status = ?`
+		args = append(args, opts.Status)
+	}
+	query += ` ORDER BY first_seen_at`
+	if opts.Limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, opts.Limit)
+	}
+	if opts.Offset > 0 {
+		query += ` OFFSET ?`
+		args = append(args, opts.Offset)
+	}
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("ListDeferred: query: %w", err)
+	}
+	defer rows.Close()
+
+	var result []DeferredRow
+	for rows.Next() {
+		row, err := scanDeferredRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("ListDeferred: scan: %w", err)
+		}
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ListDeferred: rows error: %w", err)
+	}
+	if result == nil {
+		result = []DeferredRow{}
+	}
+	return result, nil
+}
+
+// GetDeferred returns a single row from sync_apply_deferred by sync_id.
+// Returns an error wrapping "not found" when no row exists (matches FindCandidates style).
+func (s *Store) GetDeferred(syncID string) (DeferredRow, error) {
+	row := s.db.QueryRow(`
+		SELECT sync_id, entity, payload, apply_status, retry_count,
+		       last_error, last_attempted_at, first_seen_at
+		FROM sync_apply_deferred
+		WHERE sync_id = ?
+	`, syncID)
+	result, err := scanDeferredRow(row)
+	if err == sql.ErrNoRows {
+		return DeferredRow{}, fmt.Errorf("GetDeferred: deferred row %q not found", syncID)
+	}
+	if err != nil {
+		return DeferredRow{}, fmt.Errorf("GetDeferred: %w", err)
+	}
+	return result, nil
+}
+
+// scannable is a common interface for *sql.Row and *sql.Rows.Scan.
+type scannable interface {
+	Scan(dest ...any) error
+}
+
+// scanDeferredRow scans a single sync_apply_deferred row into a DeferredRow.
+// The payload is decoded to map[string]any; malformed JSON sets PayloadValid=false.
+func scanDeferredRow(row scannable) (DeferredRow, error) {
+	var r DeferredRow
+	var rawPayload string
+	if err := row.Scan(
+		&r.SyncID, &r.Entity, &rawPayload, &r.ApplyStatus, &r.RetryCount,
+		&r.LastError, &r.LastAttemptedAt, &r.FirstSeenAt,
+	); err != nil {
+		return r, err
+	}
+	r.PayloadRaw = rawPayload
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(rawPayload), &decoded); err == nil {
+		r.Payload = decoded
+		r.PayloadValid = true
+	} else {
+		r.PayloadValid = false
+	}
+	return r, nil
 }
 
 // ListObservationSyncPayloads returns the decoded payloads of all sync_mutations
